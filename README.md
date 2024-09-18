@@ -1,4 +1,5 @@
 # BEINGS: Bayesian Embodied Image-goal Navigation with Gaussian Splatting
+This repository includes the code that can be used to reproduce the results of our paper [BEINGS: Bayesian Embodied Image-goal Navigation with Gaussian Splatting](https://arxiv.org/abs/2409.10216)
 
 ## Clone the repo
 ```
