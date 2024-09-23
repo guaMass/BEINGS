@@ -35,3 +35,19 @@ There are two ways to view the results of BEINGS. If you choose to log while BEI
 
 ## Run with your own map
 Feel free to try BEINGS on your own 3DGS file (must be `.ply` formmat) and your own images.
+
+## Demonstration
+<p align="center">
+  <a href="">
+    <img src="./assets/exp03.gif" alt="Logo" width="75%">
+  </a>
+</p>
+See more demonstrations on our website.
+
+
+## Acknowledgement
+- [SuperSplat](https://github.com/playcanvas/super-splat) - Open source browser-based tool to clean/filter, reorient and compress .ply/.splat files.
+- [nerfstudio](https://github.com/nerfstudio-project/gsplat) - Open source tool to generate 3DGS file from images.
+- [LUMA AI](https://lumalabs.ai/interactive-scenes) - Commercial tool to generate 3DGS file with smart phone.
+- [SpectacularAI](https://github.com/SpectacularAI/point-cloud-tools) - Conversion scripts for different 3DGS conventions.
+- [awesome-3D-gaussian-splatting](https://github.com/MrNeRF/awesome-3D-gaussian-splatting) - Curated list of papers and resources focused on 3D Gaussian Splatting, intended to keep pace with the anticipated surge of research in the coming months.
