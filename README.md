@@ -51,3 +51,4 @@ See more demonstrations on our website.
 - [LUMA AI](https://lumalabs.ai/interactive-scenes) - Commercial tool to generate 3DGS file with smart phone.
 - [SpectacularAI](https://github.com/SpectacularAI/point-cloud-tools) - Conversion scripts for different 3DGS conventions.
 - [awesome-3D-gaussian-splatting](https://github.com/MrNeRF/awesome-3D-gaussian-splatting) - Curated list of papers and resources focused on 3D Gaussian Splatting, intended to keep pace with the anticipated surge of research in the coming months.
+- [PythonRobotics](https://github.com/AtsushiSakai/PythonRobotics) - Some of the utility functions used in the coordinate conversion processes have been sourced from this open-source library.
