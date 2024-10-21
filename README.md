@@ -52,3 +52,4 @@ See more demonstrations on our website.
 - [SpectacularAI](https://github.com/SpectacularAI/point-cloud-tools) - Conversion scripts for different 3DGS conventions.
 - [awesome-3D-gaussian-splatting](https://github.com/MrNeRF/awesome-3D-gaussian-splatting) - Curated list of papers and resources focused on 3D Gaussian Splatting, intended to keep pace with the anticipated surge of research in the coming months.
 - [PythonRobotics](https://github.com/AtsushiSakai/PythonRobotics) - Some of the utility functions used in the coordinate conversion processes have been sourced from this open-source library.
+- [PatchNetVLAD](https://github.com/taowenyin/PatchNetVLAD) - CVPR2021 paper "Patch-NetVLAD: Multi-Scale Fusion of Locally-Global Descriptors for Place Recognition"
