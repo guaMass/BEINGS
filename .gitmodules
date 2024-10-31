@@ -1,3 +1,6 @@
 [submodule "3DGS_PoseRender"]
 	path = 3DGS_PoseRender
 	url = https://github.com/guaMass/3DGS_PoseRender.git
+[submodule "patchnetvlad"]
+	path = patchnetvlad
+	url = https://github.com/QVPR/Patch-NetVLAD/tree/main
