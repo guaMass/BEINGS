@@ -1,8 +1,17 @@
 import numpy as np
+import torch
 from utils import angle_mod
 import os
 from tqdm import tqdm
-from PIL import Image
+import PIL
+import matplotlib.pyplot as plt
+
+currentdir = os.path.dirname(os.path.abspath(__file__))
+beings_dir = os.path.dirname(currentdir)
+gaussian_dir = os.path.join(beings_dir, "3DGS_PoseRender")
+patchnet_dir = os.path.join(beings_dir, "patchnetvlad")
+os.sys.path.insert(0, gaussian_dir)
+os.sys.path.insert(0, patchnet_dir)
 from camera import Camera
 from gaussian_model import GaussianModel
 from render import Renderer
@@ -12,12 +21,31 @@ from utils import rotation_matrix_y
 import torchvision.transforms as transforms
 
 from vlad_loss import VLAD_SIM
-vlad_s = VLAD_SIM("../patchnetvlad/configs/speed.ini")
-vlad_p = VLAD_SIM("../patchnetvlad/configs/performance.ini")
+vlad_s = VLAD_SIM("patchnetvlad/patchnetvlad/configs/speed.ini")
+vlad_p = VLAD_SIM("patchnetvlad/patchnetvlad/configs/performance.ini")
 
+import rospy
+import cv2
+from sensor_msgs.msg import CameraInfo, Image 
+from geometry_msgs.msg import Twist
+from cv_bridge import CvBridge 
 
+class ROS_Interface():
+    def __init__(self):
+        rospy.init_node('beings')
+        self.bridge = CvBridge()  
+        self.color_image = None
+        
+        self.pub = rospy.Publisher('/cmd_vel', Twist, queue_size=10)
+        
+    def acquire_color_image(self):  
+        color_msg = rospy.wait_for_message("/camera/color/image_raw", Image)
+        self.color_image = self.bridge.imgmsg_to_cv2(color_msg, desired_encoding="bgr8")
+        return self.color_image
 
-model_path = "..\scence\\01\luma_fix.ply" # Path to the ply file model
+ros_interface = ROS_Interface()
+
+model_path = "scence/03/larger.ply" # Path to the ply file model
 camera = Camera()
 camera_info = {'width': 1920,
                 'height': 1440,
@@ -44,12 +72,12 @@ def input_transform(resize=(480, 640)):
                                  std=[0.229, 0.224, 0.225]),
         ])
 task_name = "hard"
-target = Image.open(f"target/scence03/{task_name}.jpg")
+target = PIL.Image.open(f"target/scence03/{task_name}.jpg")
 it = input_transform((360,480))
 tf_target = it(target).unsqueeze(0).cuda()
-# if ./PIE_temp/task_name not exist, create it
-if not os.path.exists(f'./PIE_temp/{task_name}'):
-    os.makedirs(f'./PIE_temp/{task_name}')
+# if temp/task_name not exist, create it
+if not os.path.exists(f'temp/{task_name}'):
+    os.makedirs(f'temp/{task_name}')
 
 def transform_state(state):
     # new_state has same shape with state
@@ -307,7 +335,7 @@ class MPPI_controller_cpu():
             state = rollout_traj[:, k, :]
         if self.log:
             # save rollout_traj
-            np.save(f'../temp/{task_name}/rollout_traj_{self.count:04d}.npy', rollout_traj)
+            np.save(f'temp/{task_name}/rollout_traj_{self.count:04d}.npy', rollout_traj)
         return rollout_traj
 
     # def update(self,state,mu=None,sigma=None,K=None):
@@ -348,17 +376,46 @@ class MPPI_controller_cpu():
         control = controls[max_index,0,:]
         # control = np.average(controls[:,0,:],axis=0,weights=weights)
         if self.log:
-            np.save(f'../temp/{task_name}/control_{self.count:04d}.npy', control)
+            np.save(f'temp/{task_name}/control_{self.count:04d}.npy', control)
         return control, weights
     
     def update(self,control):
-        # print(self.state)
-        # print(control)
+        
+        move_cmd = Twist()
+        move_cmd.linear.x = 0
+        move_cmd.angular.z = 0.2
+        ros_interface.pub.publish(move_cmd)
+
         new_state = dynamics(self.state,control)
-        # print(new_state)
+
         new_render_state = transform_state(new_state.reshape(1,1, 4)).reshape(4,)
         camera.update(new_render_state[:3],rotation_matrix_y(new_render_state[3]))
-        im = renderer.render().unsqueeze(0)
+        im = renderer.render().unsqueeze(0) # (1, C, H, W) 在维度 0 位置增加一个新的维度，因此 im 的形状从 (C, H, W) 变为 (1, C, H, W)。这种形状是典型的 batch 处理格式，方便在深度学习中处理多张图片的情形。
+        current_view = im.clone().cpu().squeeze(0).permute(1, 2, 0).detach().numpy() # 将通道顺序从 (C, H, W) 变为 (H, W, C)，使其符合 NumPy 和大部分图像库（如 PIL 和 Matplotlib）对图像的通道顺序要求，即高度、宽度、通道顺序
+        current_view = (current_view * 255).astype(np.uint8)
+        current_view = PIL.Image.fromarray(current_view) #Matplotlib 处理的图像格式为 (H, W, C)
+        plt.figure("current view")
+        plt.imshow(current_view)
+        plt.show(block=False)
+        plt.pause(1)
+
+        # cv_im = ros_interface.acquire_color_image()
+        # rgb_image = cv2.cvtColor(cv_im, cv2.COLOR_BGR2RGB) # 输出形状为 (H, W, C)
+        # normalized_image = rgb_image / 255.0
+        # tensor_image = torch.from_numpy(normalized_image).float()
+        # im = tensor_image.permute(2, 0, 1).unsqueeze(0)  # 调整为 (1, C, H, W)，以匹配深度学习框架的格式
+
+        # current_view = im.clone().cpu().squeeze(0).permute(1, 2, 0).detach().numpy()
+        # current_view = (current_view * 255).astype(np.uint8)
+        # current_view = PIL.Image.fromarray(current_view)
+        # plt.figure("camera view")
+        # plt.imshow(current_view)
+        # plt.show(block=False)
+        # plt.pause(1)
+
+        # cv2.imshow("Color Image", im)
+        # cv2.waitKey(100)
+
         current_similarity = vlad_p.get_vlad_loss(im, tf_target)
         print(current_similarity)
         if current_similarity > 0.035:#0.08:
@@ -369,7 +426,7 @@ class MPPI_controller_cpu():
         else:
             self.probability_grid = update_probability_grid(new_state[0],new_state[1],current_similarity,self.probability_grid)
         if self.log:
-            np.save(f'../temp/{task_name}/prob_grid_{self.count:04d}.npy', self.probability_grid)
+            np.save(f'temp/{task_name}/prob_grid_{self.count:04d}.npy', self.probability_grid)
         self.state = new_state
         self.mu = (control[0],control[1])
         self.sigma = (1,0.3)
