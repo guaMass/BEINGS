@@ -1,6 +1,12 @@
 import numpy as np
 from utils import angle_mod
 import os
+import sys
+# 获取当前文件夹的路径
+current_dir = os.path.dirname(os.path.abspath(__file__))
+# 添加3D文件夹的路径
+sys.path.append(os.path.join(current_dir, '..', '3DGS_PoseRender'))
+
 from tqdm import tqdm
 from PIL import Image
 from camera import Camera
@@ -12,12 +18,12 @@ from utils import rotation_matrix_y
 import torchvision.transforms as transforms
 
 from vlad_loss import VLAD_SIM
-vlad_s = VLAD_SIM("../patchnetvlad/configs/speed.ini")
-vlad_p = VLAD_SIM("../patchnetvlad/configs/performance.ini")
+vlad_s = VLAD_SIM("patchnetvlad_root/patchnetvlad/configs/speed.ini")
+vlad_p = VLAD_SIM("patchnetvlad_root/patchnetvlad/configs/performance.ini")
 
 
 
-model_path = "..\scence\\01\luma_fix.ply" # Path to the ply file model
+model_path = "scence\\01\in_paper.ply" # Path to the ply file model
 camera = Camera()
 camera_info = {'width': 1920,
                 'height': 1440,
@@ -44,7 +50,7 @@ def input_transform(resize=(480, 640)):
                                  std=[0.229, 0.224, 0.225]),
         ])
 task_name = "hard"
-target = Image.open(f"target/scence03/{task_name}.jpg")
+target = Image.open(f"target/scence01/{task_name}.jpg")
 it = input_transform((360,480))
 tf_target = it(target).unsqueeze(0).cuda()
 # if ./PIE_temp/task_name not exist, create it
@@ -307,7 +313,7 @@ class MPPI_controller_cpu():
             state = rollout_traj[:, k, :]
         if self.log:
             # save rollout_traj
-            np.save(f'../temp/{task_name}/rollout_traj_{self.count:04d}.npy', rollout_traj)
+            np.save(f'PIE_temp/{task_name}/rollout_traj_{self.count:04d}.npy', rollout_traj)
         return rollout_traj
 
     # def update(self,state,mu=None,sigma=None,K=None):
@@ -348,7 +354,7 @@ class MPPI_controller_cpu():
         control = controls[max_index,0,:]
         # control = np.average(controls[:,0,:],axis=0,weights=weights)
         if self.log:
-            np.save(f'../temp/{task_name}/control_{self.count:04d}.npy', control)
+            np.save(f'PIE_temp/{task_name}/control_{self.count:04d}.npy', control)
         return control, weights
     
     def update(self,control):
@@ -369,7 +375,7 @@ class MPPI_controller_cpu():
         else:
             self.probability_grid = update_probability_grid(new_state[0],new_state[1],current_similarity,self.probability_grid)
         if self.log:
-            np.save(f'../temp/{task_name}/prob_grid_{self.count:04d}.npy', self.probability_grid)
+            np.save(f'PIE_temp/{task_name}/prob_grid_{self.count:04d}.npy', self.probability_grid)
         self.state = new_state
         self.mu = (control[0],control[1])
         self.sigma = (1,0.3)

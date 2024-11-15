@@ -1,3 +1,11 @@
+import sys
+import os
+
+# 获取当前文件夹的路径
+current_dir = os.path.dirname(os.path.abspath(__file__))
+# 添加patch/patchv目录到sys.path
+sys.path.append(os.path.join(current_dir, '..', 'patchnetvlad_root'))
+
 from patchnetvlad.models.models_generic import get_backend, get_model, get_pca_encoding
 from patchnetvlad.tools.patch_matcher import PatchMatcher
 # from patchnetvlad.tools.datasets import input_transform
@@ -8,15 +16,14 @@ import torch
 import torchvision.transforms as transforms
 import numpy as np
 import configparser
-import os
 from os.path import join
 
 # configfile = "D:\Project\ICRA\Patch-NetVLAD\patchnetvlad\configs\performance.ini"
 # config = configparser.ConfigParser()
 # config.read(configfile)
 
-# PATCHNETVLAD_ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
-
+# PATCHNETVLAD_ROOT_DIR = os.path.join(current_dir, '..', 'patchnetvlad_root')
+# print(PATCHNETVLAD_ROOT_DIR)
 class VLAD_SIM():
     def __init__(self,configfile):
         self.config = configparser.ConfigParser()
