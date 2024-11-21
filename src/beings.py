@@ -28,7 +28,10 @@ import rospy
 import cv2
 from sensor_msgs.msg import CameraInfo, Image 
 from geometry_msgs.msg import Twist
-from cv_bridge import CvBridge 
+from nav_msgs.msg import Odometry
+from cv_bridge import CvBridge
+from tf.transformations import euler_from_quaternion
+import time
 
 class ROS_Interface():
     def __init__(self):
@@ -42,17 +45,41 @@ class ROS_Interface():
         color_msg = rospy.wait_for_message("/camera/color/image_raw", Image)
         self.color_image = self.bridge.imgmsg_to_cv2(color_msg, desired_encoding="bgr8")
         return self.color_image
+    
+    def acquire_odom(self):  
+        odom_msg = rospy.wait_for_message("/ranger_base_node/odom", Odometry)
 
-ros_interface = ROS_Interface()
+        x = odom_msg.pose.pose.position.x
+        y = -odom_msg.pose.pose.position.y
+        orientation_q = odom_msg.pose.pose.orientation
+        orientation_list = [orientation_q.x, orientation_q.y, orientation_q.z, orientation_q.w]
+        _, _, yaw = euler_from_quaternion(orientation_list)
 
-model_path = "scence/03/larger.ply" # Path to the ply file model
+        return [x, y, 0 ,yaw]
+
+
+RUN_SIM = True
+
+if not RUN_SIM:
+    ros_interface = ROS_Interface()
+
+control_duration = 2.0
+
+# model_path = "scence/03/larger.ply" # Path to the ply file model
+model_path = "scence/04/splat_g.ply" # Path to the ply file model
 camera = Camera()
-camera_info = {'width': 1920,
-                'height': 1440,
-                'position': [0, -0.5, 0],
+# camera_info = {'width': 1920,
+#                 'height': 1440,
+#                 'position': [0, -0.5, 0],
+#                 'rotation': [[1,0,0],[0,1,0],[0,0,1]],
+#                 'fy': 1371.7027360999618,
+#                 'fx': 1371.7027360999618}
+camera_info = {'width': 2560,
+                'height': 1920,
+                'position': [0, 0, 0],
                 'rotation': [[1,0,0],[0,1,0],[0,0,1]],
-                'fy': 1371.7027360999618,
-                'fx': 1371.7027360999618}
+                'fy': 2420.915039062,
+                'fx': 2420.099853516}
 camera.load(camera_info)
 gaussian_model = GaussianModel().load(model_path)
 renderer = Renderer(gaussian_model, camera, logging=False)
@@ -71,23 +98,136 @@ def input_transform(resize=(480, 640)):
             transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                  std=[0.229, 0.224, 0.225]),
         ])
-task_name = "hard"
-target = PIL.Image.open(f"target/scence03/{task_name}.jpg")
-it = input_transform((360,480))
+task_name = "image1"
+target = PIL.Image.open(f"target/scence04/{task_name}.png")
+it = input_transform((480, 640))
 tf_target = it(target).unsqueeze(0).cuda()
 # if temp/task_name not exist, create it
 if not os.path.exists(f'temp/{task_name}'):
     os.makedirs(f'temp/{task_name}')
 
+# def transform_state(state):
+#     # new_state has same shape with state
+#     new_state = state.copy()
+#     # rotate the state 180 degree along y-axis
+#     new_state[:,:,:3] = -state[:,:,:3]
+#     # switch new_state[:,:,1] and new_state[:,:,2]
+#     new_state[:,:,1], new_state[:,:,2] = new_state[:,:,2].copy(), new_state[:,:,1].copy()
+#     new_state[:,:,3] = -(state[:,:,3]+np.pi/2)
+#     return new_state
+
+
+def transform_matrices_batch(input_tensor):
+    # 假设输入为 (N, K, 4) 的张量
+    x, y, z, w = input_tensor[..., 0], input_tensor[..., 1], input_tensor[..., 2], input_tensor[..., 3]
+    
+    # 计算 cos(w) 和 sin(w)
+    cos_w = torch.cos(w)
+    sin_w = torch.sin(w)
+    
+    # 初始化 (N, K, 4, 4) 的输出张量
+    N, K = input_tensor.shape[:2]
+    matrices = torch.zeros((N, K, 4, 4), dtype=input_tensor.dtype, device=input_tensor.device)
+    
+    # 填充旋转和平移矩阵
+    matrices[..., 0, 0] = cos_w
+    matrices[..., 0, 1] = -sin_w
+    matrices[..., 1, 0] = sin_w
+    matrices[..., 1, 1] = cos_w
+    matrices[..., 2, 2] = 1
+    matrices[..., 3, 3] = 1
+    
+    # 设置平移部分
+    matrices[..., 0, 3] = x
+    matrices[..., 1, 3] = y
+    matrices[..., 2, 3] = z
+    
+    return matrices
+
+def apply_transformation(input_tensor, T):
+    # 假设 input_tensor 为 (N, K, 4, 4)，T 为 (4, 4)
+
+    T = torch.from_numpy(T)
+    
+    # 将 T 扩展成 (N, K, 4, 4) 的形状，便于批量矩阵乘法
+    T_expanded = T.expand(input_tensor.shape[0], input_tensor.shape[1], 4, 4)
+    
+    # 执行批量矩阵乘法
+    result = torch.matmul(input_tensor, T_expanded)
+    
+    return result
+
+def extract_position_and_angle(transformed_tensor):
+    # 假设 transformed_tensor 的形状为 (N, K, 4, 4)
+    
+    # 提取平移部分 (x, y, z)
+    x = transformed_tensor[..., 0, 3]
+    y = transformed_tensor[..., 1, 3]
+    z = transformed_tensor[..., 2, 3]
+    
+    # 计算绕 z 轴的旋转角度 w
+    # 角度 w 可以通过 atan2 函数计算
+    w = torch.atan2(transformed_tensor[..., 1, 0], transformed_tensor[..., 0, 0])
+    
+    # 将 x, y, z, w 组合成 (N, K, 4) 的张量
+    result = torch.stack((x, y, z, w), dim=-1)
+    
+    return result
+
+def euler_to_se3(x, y, z, roll, pitch, yaw):
+    # 计算绕X轴的旋转矩阵
+    Rx = np.array([
+        [1, 0, 0],
+        [0, np.cos(roll), -np.sin(roll)],
+        [0, np.sin(roll), np.cos(roll)]
+    ])
+
+    # 计算绕Y轴的旋转矩阵
+    Ry = np.array([
+        [np.cos(pitch), 0, np.sin(pitch)],
+        [0, 1, 0],
+        [-np.sin(pitch), 0, np.cos(pitch)]
+    ])
+
+    # 计算绕Z轴的旋转矩阵
+    Rz = np.array([
+        [np.cos(yaw), -np.sin(yaw), 0],
+        [np.sin(yaw), np.cos(yaw), 0],
+        [0, 0, 1]
+    ])
+
+    # 组合成旋转矩阵 (ZYX 顺序)
+    R = Rz @ Ry @ Rx
+
+    # 构造 SE(3) 矩阵
+    se3_matrix = np.eye(4)
+    se3_matrix[:3, :3] = R
+    se3_matrix[:3, 3] = [x, y, z]
+
+    return se3_matrix, R
+
 def transform_state(state):
-    # new_state has same shape with state
-    new_state = state.copy()
-    # rotate the state 180 degree along y-axis
-    new_state[:,:,:3] = -state[:,:,:3]
-    # switch new_state[:,:,1] and new_state[:,:,2]
-    new_state[:,:,1], new_state[:,:,2] = new_state[:,:,2].copy(), new_state[:,:,1].copy()
-    new_state[:,:,3] = -(state[:,:,3]+np.pi/2)
-    return new_state
+    
+    state_tensor = torch.from_numpy(state)
+    state_matrices = transform_matrices_batch(state_tensor)
+    # T = torch.tensor([
+    #                 [-1.0000000,  0.0000000,  0.0000000, 0.0],
+    #                 [-0.0000000,  0.3420202, -0.9396926, 0.1],
+    #                 [-0.0000000, -0.9396926, -0.3420202, 0.3],
+    #                 [0.0000000, 0.0, 0.0, 1.0]
+    #             ], dtype=torch.float64)    
+    # x, y, z = 0.0, 0.0, 0.3
+    # roll, pitch, yaw = np.radians(-110), np.radians(0), np.radians(-90)  # 转换为弧度 world转转到camera
+    x, y, z = -0.25, 0.3, 1.5
+    roll, pitch, yaw = np.radians(-115), np.radians(0), np.radians(-90)  # 转换为弧度 world转转到camera
+    se3_matrix, so3_matrix = euler_to_se3(x, y, z, roll, pitch, yaw)
+
+    transformed_matrices = apply_transformation(state_matrices, se3_matrix)
+    # position_and_w = extract_position_and_angle(transformed_matrices)
+    trans = transformed_matrices[:,:,0:3,-1]
+    rot = transformed_matrices[:,:,0:3,0:3]
+
+    return trans, rot
 
 # def init_prob_grid(shape,states,target_tf):
 #     q_grid = np.zeros(shape)
@@ -159,16 +299,18 @@ def dynamics(state, control):
     x, y, z, theta = state.T if len(state.shape) > 1 else state
     theta = angle_mod(theta)
     vx, vy, w ,h = control.T if len(control.shape) > 1 else control
-    dx = vx * np.cos(theta) + vy * np.sin(theta)
-    dy = vx * np.sin(theta) - vy * np.cos(theta)
-    dz = h
-    dtheta = w
+
+    dx = control_duration * vx * np.cos(theta) - control_duration * vy * np.sin(theta)
+    dy = control_duration * vx * np.sin(theta) + control_duration * vy * np.cos(theta)
+
+    dz = h * 0
+    dtheta = control_duration * w
     # state = np.expand_dims(state) if len(state.shape) == 1 else state
     next_state = np.array([x + dx, y + dy, z + dz, angle_mod(theta + dtheta)]).T
     return next_state
 
 def cost2go(controls,state,obstacles=None,width=None,height=None):
-    gocosts = 10*np.ones(controls.shape[0])
+    gocosts = 10 * np.ones(controls.shape[0])
     # gocosts += 10*np.sum(np.abs(angle_mod(controls[:,:,3])),axis=1)
     current_i,current_j = get_id(state[0],state[1])
     # calculate all trajectory: N*K*dim which has same shape with controls
@@ -216,7 +358,7 @@ def fuzz(control,sigma):
     fuzzed_control[cols[mask], non_zero_dims[mask]] = random_values_vy[mask]
     mask = (non_zero_dims == 2)
     fuzzed_control[cols[mask], non_zero_dims[mask]] = random_values_w[mask]
-    fuzzed_control[:,3] = np.random.normal(0, 0.05, 5)
+    # fuzzed_control[:,3] = np.random.normal(0, 0.05, 5)
     return fuzzed_control
 
     # fuzzed_control[:,:2] = np.clip(fuzzed_control[:,:2], -1, 1)
@@ -286,7 +428,7 @@ class MPPI_controller_cpu():
             random_values_vx = np.random.uniform(-0.1, 0.5, (self.N-8, self.K))
             random_values_vy = np.random.normal(self.mu[1], self.sigma[1], (self.N-8, self.K))
             random_values_w = np.random.normal(self.mu[2], self.sigma[2], (self.N-8, self.K))
-            sampled_controls[:,:,3] = np.random.normal(0, 0.05, (self.N, self.K))
+            # sampled_controls[:,:,3] = np.random.normal(0, 0.05, (self.N, self.K))
             rows, cols = np.indices((self.N-8, self.K))
             mask = (non_zero_dims == 0)
             sampled_controls[rows[mask], cols[mask], non_zero_dims[mask]] = random_values_vx[mask]
@@ -350,14 +492,14 @@ class MPPI_controller_cpu():
     def predict(self,controls):
         rollout_traj = self.rollout(controls) # N*K+1*4 start from self.state
         # traj_cost = cost2go(controls, self.state,width=np.array([-2,3]),height=np.array([-2,3]),obstacles=[np.array([1.36, 1.31]),np.array([1.3, -0.8]),np.array([0.05, 0])])
-        traj_cost = cost2go(controls, self.state,width=np.array([-3,3]),height=np.array([-3,3]),obstacles=[np.array([-0.5,0]),np.array([0.5, 0]),np.array([1.4, 1.5]),np.array([0,1.75])])
-        render_traj = transform_state(rollout_traj[:,1:,:])
+        traj_cost = cost2go(controls, self.state,width=np.array([-3,3]),height=np.array([-3,3]))#,obstacles=[np.array([-0.5,0]),np.array([0.5, 0]),np.array([1.4, 1.5]),np.array([0,1.75])])
+        trans, rot = transform_state(rollout_traj[:,1:,:])
         image_similarity = np.zeros((self.N)) # 10位数，基本上是20~30
         bayesian_prob = np.zeros((self.N)) # 0~1
-        for i,traj in enumerate(render_traj):
+        for i,traj in enumerate(trans):
             #traj: K*dim
              for j,state in enumerate(traj):
-                camera.update(state[:3],rotation_matrix_y(state[3]))
+                camera.update(state,rot[i,j,:,:])
                 im = renderer.render().unsqueeze(0)
                 if j < self.K-1:
                     image_similarity[i] += vlad_s.get_vlad_loss(im, tf_target)
@@ -379,42 +521,54 @@ class MPPI_controller_cpu():
             np.save(f'temp/{task_name}/control_{self.count:04d}.npy', control)
         return control, weights
     
-    def update(self,control):
-        
-        move_cmd = Twist()
-        move_cmd.linear.x = 0
-        move_cmd.angular.z = 0.2
-        ros_interface.pub.publish(move_cmd)
+    def update(self,control):   
+        print('control: ', control)
 
-        new_state = dynamics(self.state,control)
+        if RUN_SIM:
+            new_state = np.hstack(dynamics(self.state,control))
+            print('odom: ', new_state)
+        else:
+            move_cmd = Twist()
+            move_cmd.linear.x = control[0]
+            move_cmd.linear.y = control[1]
+            move_cmd.angular.z = control[2]
+            start_time = time.time()
+            while time.time() - start_time < control_duration:
+                ros_interface.pub.publish(move_cmd)
+            move_cmd.linear.x = 0
+            move_cmd.linear.y = 0
+            move_cmd.angular.z = 0
+            while time.time() - start_time < control_duration + 1.0:
+                ros_interface.pub.publish(move_cmd)
 
-        new_render_state = transform_state(new_state.reshape(1,1, 4)).reshape(4,)
-        camera.update(new_render_state[:3],rotation_matrix_y(new_render_state[3]))
+            new_state = np.array(ros_interface.acquire_odom())
+            print('odom: ', new_state)
+
+            cv_im = ros_interface.acquire_color_image()
+            rgb_image = cv2.cvtColor(cv_im, cv2.COLOR_BGR2RGB) # 输出形状为 (H, W, C)
+            normalized_image = rgb_image / 255.0
+            tensor_image = torch.from_numpy(normalized_image).float()
+            im = tensor_image.permute(2, 0, 1).unsqueeze(0)  # 调整为 (1, C, H, W)，以匹配深度学习框架的格式
+
+            current_view = im.clone().cpu().squeeze(0).permute(1, 2, 0).detach().numpy()
+            current_view = (current_view * 255).astype(np.uint8)
+            current_view = PIL.Image.fromarray(current_view)
+            plt.figure("Camera View")
+            plt.imshow(current_view)
+            plt.show(block=False)
+            plt.pause(1)
+
+
+        trans, rot = transform_state(np.array([[new_state]]))
+        camera.update(trans[0,0,:], rot[0,0,:,:])
         im = renderer.render().unsqueeze(0) # (1, C, H, W) 在维度 0 位置增加一个新的维度，因此 im 的形状从 (C, H, W) 变为 (1, C, H, W)。这种形状是典型的 batch 处理格式，方便在深度学习中处理多张图片的情形。
-        current_view = im.clone().cpu().squeeze(0).permute(1, 2, 0).detach().numpy() # 将通道顺序从 (C, H, W) 变为 (H, W, C)，使其符合 NumPy 和大部分图像库（如 PIL 和 Matplotlib）对图像的通道顺序要求，即高度、宽度、通道顺序
-        current_view = (current_view * 255).astype(np.uint8)
-        current_view = PIL.Image.fromarray(current_view) #Matplotlib 处理的图像格式为 (H, W, C)
-        plt.figure("current view")
-        plt.imshow(current_view)
+        render_view = im.clone().cpu().squeeze(0).permute(1, 2, 0).detach().numpy() # 将通道顺序从 (C, H, W) 变为 (H, W, C)，使其符合 NumPy 和大部分图像库（如 PIL 和 Matplotlib）对图像的通道顺序要求，即高度、宽度、通道顺序
+        render_view = (render_view * 255).astype(np.uint8)
+        render_view = PIL.Image.fromarray(render_view) # Matplotlib 处理的图像格式为 (H, W, C)
+        plt.figure("Render View")
+        plt.imshow(render_view)
         plt.show(block=False)
         plt.pause(1)
-
-        # cv_im = ros_interface.acquire_color_image()
-        # rgb_image = cv2.cvtColor(cv_im, cv2.COLOR_BGR2RGB) # 输出形状为 (H, W, C)
-        # normalized_image = rgb_image / 255.0
-        # tensor_image = torch.from_numpy(normalized_image).float()
-        # im = tensor_image.permute(2, 0, 1).unsqueeze(0)  # 调整为 (1, C, H, W)，以匹配深度学习框架的格式
-
-        # current_view = im.clone().cpu().squeeze(0).permute(1, 2, 0).detach().numpy()
-        # current_view = (current_view * 255).astype(np.uint8)
-        # current_view = PIL.Image.fromarray(current_view)
-        # plt.figure("camera view")
-        # plt.imshow(current_view)
-        # plt.show(block=False)
-        # plt.pause(1)
-
-        # cv2.imshow("Color Image", im)
-        # cv2.waitKey(100)
 
         current_similarity = vlad_p.get_vlad_loss(im, tf_target)
         print(current_similarity)
@@ -435,7 +589,7 @@ class MPPI_controller_cpu():
 
 def main():
     # initial state
-    state = [2, 2, 0.3, np.pi]
+    state = [0, 0, 0, 0]
     states =[state]
     controller = MPPI_controller_cpu(N=100, K=5, mu=(0,0,0), sigma=(0.3,0.3,0.1),state=state,log=True)
     # while not Found:
