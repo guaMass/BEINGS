@@ -5,6 +5,7 @@ import os
 from tqdm import tqdm
 import PIL
 import matplotlib.pyplot as plt
+import math
 
 currentdir = os.path.dirname(os.path.abspath(__file__))
 beings_dir = os.path.dirname(currentdir)
@@ -27,11 +28,19 @@ vlad_p = VLAD_SIM("patchnetvlad/patchnetvlad/configs/performance.ini")
 import rospy
 import cv2
 from sensor_msgs.msg import CameraInfo, Image 
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import Twist, PoseStamped
 from nav_msgs.msg import Odometry
 from cv_bridge import CvBridge
 from tf.transformations import euler_from_quaternion
 import time
+
+RUN_SIM = True
+OFFLINE_MODE = False
+# model_path = "scence/03/larger.ply" # Path to the ply file model
+model_path = "scence/05/splat_k.ply" # Path to the ply file model
+task_name = "image1"
+target = PIL.Image.open(f"target/scence05/{task_name}.png")
+control_duration = 2.0
 
 class ROS_Interface():
     def __init__(self):
@@ -56,17 +65,21 @@ class ROS_Interface():
         _, _, yaw = euler_from_quaternion(orientation_list)
 
         return [x, y, 0 ,yaw]
+    
+    def acquire_哦菩提擦亮_pose(self):  
+        pose_msg = rospy.wait_for_message("/vrpn_client_node/car/pose", PoseStamped)
 
+        x = pose_msg.pose.position.x
+        y = pose_msg.pose.position.y
+        orientation_q = pose_msg.pose.orientation
+        orientation_list = [orientation_q.x, orientation_q.y, orientation_q.z, orientation_q.w]
+        _, _, yaw = euler_from_quaternion(orientation_list)
 
-RUN_SIM = True
+        return [x, y, 0 ,yaw]
 
-if not RUN_SIM:
+if not RUN_SIM or OFFLINE_MODE:
     ros_interface = ROS_Interface()
 
-control_duration = 2.0
-
-# model_path = "scence/03/larger.ply" # Path to the ply file model
-model_path = "scence/04/splat_g.ply" # Path to the ply file model
 camera = Camera()
 # camera_info = {'width': 1920,
 #                 'height': 1440,
@@ -98,10 +111,10 @@ def input_transform(resize=(480, 640)):
             transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                  std=[0.229, 0.224, 0.225]),
         ])
-task_name = "image1"
-target = PIL.Image.open(f"target/scence04/{task_name}.png")
+
 it = input_transform((480, 640))
 tf_target = it(target).unsqueeze(0).cuda()
+
 # if temp/task_name not exist, create it
 if not os.path.exists(f'temp/{task_name}'):
     os.makedirs(f'temp/{task_name}')
@@ -218,8 +231,15 @@ def transform_state(state):
     #             ], dtype=torch.float64)    
     # x, y, z = 0.0, 0.0, 0.3
     # roll, pitch, yaw = np.radians(-110), np.radians(0), np.radians(-90)  # 转换为弧度 world转转到camera
-    x, y, z = -0.25, 0.3, 1.5
-    roll, pitch, yaw = np.radians(-115), np.radians(0), np.radians(-90)  # 转换为弧度 world转转到camera
+    
+    #scence4
+    # x, y, z = -0.25, 0.3, 1.5 
+    # roll, pitch, yaw = np.radians(-115), np.radians(0), np.radians(-90)  # 转换为弧度 world转转到camera
+    
+    #scence5
+    x, y, z = -0.18, 0.10, 1.5
+    roll, pitch, yaw = np.radians(-119), np.radians(0), np.radians(-90)  # 转换为弧度 world转转到camera
+
     se3_matrix, so3_matrix = euler_to_se3(x, y, z, roll, pitch, yaw)
 
     transformed_matrices = apply_transformation(state_matrices, se3_matrix)
@@ -324,7 +344,7 @@ def cost2go(controls,state,obstacles=None,width=None,height=None):
         for obstacle in obstacles:
             # 计算每个状态到所有障碍物的距离
             distances = np.linalg.norm(trajs[:, :, :2][:, :, np.newaxis] - obstacle, axis=3)
-            mask = distances < 0.5
+            mask = distances < 0.8
             # print(mask.shape)
             gocosts[np.any(mask, axis=(1,2))] += 1000
     if width is not None and height is not None:
@@ -362,6 +382,54 @@ def fuzz(control,sigma):
     return fuzzed_control
 
     # fuzzed_control[:,:2] = np.clip(fuzzed_control[:,:2], -1, 1)
+
+def close_loop_position_control(desired_state, current_state, control, kp=1.0,max_speed=0.3):
+        non_zero_indices = np.where(control != 0)[0]
+        v_x, v_y, v_w = 0, 0, 0
+        move_cmd = Twist()
+
+        while np.linalg.norm(desired_state - current_state) > 0.03:
+            current_state = np.array(ros_interface.acquire_optical_track_pose())
+            # 提取目标和当前状态
+            x_d, y_d, w_d = desired_state[0], desired_state[1], desired_state[3]
+            x_c, y_c, w_c = current_state[0], current_state[1], current_state[3]
+            
+            # 计算目标点相对于当前状态的世界坐标位移
+            dx = x_d - x_c
+            dy = y_d - y_c
+
+            # 将世界坐标系下的位移转换到当前状态自身坐标系下
+            x_prime = math.cos(w_c) * dx + math.sin(w_c) * dy
+            y_prime = -math.sin(w_c) * dx + math.cos(w_c) * dy
+            delta_w = angle_mod(w_d - w_c)
+
+            v_x, v_y, v_w = 0, 0, 0
+            
+            if non_zero_indices == 0:
+                v_x = kp * x_prime 
+            elif non_zero_indices == 1:
+                v_y = kp * y_prime
+            elif non_zero_indices == 2:
+                v_w = kp * delta_w
+                
+            v_x = max(min(v_x, max_speed), -max_speed)
+            v_y = max(min(v_y, max_speed), -max_speed)
+            v_w = max(min(v_w, max_speed), -max_speed)
+
+            move_cmd.linear.x = v_x
+            move_cmd.linear.y = v_y
+            move_cmd.angular.z = v_w
+            ros_interface.pub.publish(move_cmd)
+
+            if abs(v_x) + abs(v_y)  < 0.01 and abs(v_w) < 0.04:
+                break
+
+        start_time = time.time()
+        move_cmd.linear.x = 0
+        move_cmd.linear.y = 0
+        move_cmd.angular.z = 0
+        while time.time() - start_time < 1.0:
+            ros_interface.pub.publish(move_cmd)
 
 class MPPI_controller_cpu():
     def __init__(self,N,K,mu,sigma,state,log=False):
@@ -470,8 +538,11 @@ class MPPI_controller_cpu():
             # rollout_traj[:, k, 0] = np.clip(rollout_traj[:, k, 0], -2+0.1, 3-0.1)
             # rollout_traj[:, k, 1] = np.clip(rollout_traj[:, k, 1], -2+0.1, 3-0.1)
             # rollout_traj[:, k, 2] = np.clip(rollout_traj[:, k, 2], 0.3, 0.8)
-            rollout_traj[:, k, 0] = np.clip(rollout_traj[:, k, 0], -3+0.1, 3-0.1)
-            rollout_traj[:, k, 1] = np.clip(rollout_traj[:, k, 1], -3+0.1, 3-0.1)
+            # rollout_traj[:, k, 0] = np.clip(rollout_traj[:, k, 0], -3+0.1, 3-0.1)
+            # rollout_traj[:, k, 1] = np.clip(rollout_traj[:, k, 1], -3+0.1, 3-0.1)
+            # rollout_traj[:, k, 2] = np.clip(rollout_traj[:, k, 2], 0.0, 0.7)
+            rollout_traj[:, k, 0] = np.clip(rollout_traj[:, k, 0], -1.5, 1.5)
+            rollout_traj[:, k, 1] = np.clip(rollout_traj[:, k, 1], -1.5, 1.5)
             rollout_traj[:, k, 2] = np.clip(rollout_traj[:, k, 2], 0.0, 0.7)
             rollout_traj[:, k, 3] = angle_mod(rollout_traj[:, k, 3])
             state = rollout_traj[:, k, :]
@@ -492,7 +563,7 @@ class MPPI_controller_cpu():
     def predict(self,controls):
         rollout_traj = self.rollout(controls) # N*K+1*4 start from self.state
         # traj_cost = cost2go(controls, self.state,width=np.array([-2,3]),height=np.array([-2,3]),obstacles=[np.array([1.36, 1.31]),np.array([1.3, -0.8]),np.array([0.05, 0])])
-        traj_cost = cost2go(controls, self.state,width=np.array([-3,3]),height=np.array([-3,3]))#,obstacles=[np.array([-0.5,0]),np.array([0.5, 0]),np.array([1.4, 1.5]),np.array([0,1.75])])
+        traj_cost = cost2go(controls, self.state,width=np.array([-1.5,1.5]),height=np.array([-1.5,1.5]),obstacles=[np.array([0.7,0])])#,np.array([0.5, 0]),np.array([1.4, 1.5]),np.array([0,1.75])])
         trans, rot = transform_state(rollout_traj[:,1:,:])
         image_similarity = np.zeros((self.N)) # 10位数，基本上是20~30
         bayesian_prob = np.zeros((self.N)) # 0~1
@@ -524,26 +595,55 @@ class MPPI_controller_cpu():
     def update(self,control):   
         print('control: ', control)
 
-        if RUN_SIM:
-            new_state = np.hstack(dynamics(self.state,control))
-            print('odom: ', new_state)
-        else:
-            move_cmd = Twist()
-            move_cmd.linear.x = control[0]
-            move_cmd.linear.y = control[1]
-            move_cmd.angular.z = control[2]
-            start_time = time.time()
-            while time.time() - start_time < control_duration:
-                ros_interface.pub.publish(move_cmd)
-            move_cmd.linear.x = 0
-            move_cmd.linear.y = 0
-            move_cmd.angular.z = 0
-            while time.time() - start_time < control_duration + 1.0:
-                ros_interface.pub.publish(move_cmd)
+        if RUN_SIM: # sim
+            
+            desired_state = np.hstack(dynamics(self.state,control))
+            print('desired_state: ', desired_state)
 
-            new_state = np.array(ros_interface.acquire_odom())
-            print('odom: ', new_state)
+            # Update new_state with dynamics directly
+            new_state = desired_state 
+            
+            if OFFLINE_MODE: # for offline control and visualization
+                current_state = np.array(ros_interface.acquire_optical_track_pose())
+                print("current_state: ", current_state)
 
+                # close loop control
+                close_loop_position_control(desired_state=desired_state, current_state=current_state, control=control)
+
+                current_state = np.array(ros_interface.acquire_optical_track_pose())
+                print("moved_to: ", current_state)
+
+                # Real camera visualization
+                cv_im = ros_interface.acquire_color_image()
+                rgb_image = cv2.cvtColor(cv_im, cv2.COLOR_BGR2RGB) # 输出形状为 (H, W, C)
+                normalized_image = rgb_image / 255.0
+                tensor_image = torch.from_numpy(normalized_image).float()
+                im = tensor_image.permute(2, 0, 1).unsqueeze(0)  # 调整为 (1, C, H, W)，以匹配深度学习框架的格式
+
+                current_view = im.clone().cpu().squeeze(0).permute(1, 2, 0).detach().numpy()
+                current_view = (current_view * 255).astype(np.uint8)
+                current_view = PIL.Image.fromarray(current_view)
+                current_view.save(f'temp/{task_name}/camera_view_output_{self.count}.png')
+                plt.figure("Camera View")
+                plt.imshow(current_view)
+                plt.show(block=False)
+                plt.pause(1)
+
+        else: # online mode
+            desired_state = np.hstack(dynamics(self.state,control))
+            print("desired_state: ", desired_state)
+
+            current_state = np.array(ros_interface.acquire_optical_track_pose())
+            print("current_state: ", current_state)
+                        
+            # close loop control
+            close_loop_position_control(desired_state=desired_state, current_state=current_state, control=control)
+
+            # Update new_state with optical track
+            new_state = np.array(ros_interface.acquire_optical_track_pose())
+            print("moved to: ", new_state)
+
+            # Real camera visualization
             cv_im = ros_interface.acquire_color_image()
             rgb_image = cv2.cvtColor(cv_im, cv2.COLOR_BGR2RGB) # 输出形状为 (H, W, C)
             normalized_image = rgb_image / 255.0
@@ -553,18 +653,37 @@ class MPPI_controller_cpu():
             current_view = im.clone().cpu().squeeze(0).permute(1, 2, 0).detach().numpy()
             current_view = (current_view * 255).astype(np.uint8)
             current_view = PIL.Image.fromarray(current_view)
+            current_view.save(f'temp/{task_name}/camera_view_output_{self.count}.png')
             plt.figure("Camera View")
             plt.imshow(current_view)
             plt.show(block=False)
             plt.pause(1)
 
+            # move_cmd = Twist()
+            # move_cmd.linear.x = control[0]
+            # move_cmd.linear.y = control[1]
+            # move_cmd.angular.z = control[2]
+            # start_time = time.time()
+            # while time.time() - start_time < control_duration:
+            #     ros_interface.pub.publish(move_cmd)
+            # move_cmd.linear.x = 0
+            # move_cmd.linear.y = 0
+            # move_cmd.angular.z = 0
+            # while time.time() - start_time < control_duration + 1.0:
+            #     ros_interface.pub.publish(move_cmd)
 
+            # # new_state = np.array(ros_interface.acquire_odom())
+            # new_state = np.array(ros_interface.acquire_optical_track_pose())
+            # print('odom: ', new_state)
+        
+        # Render camera visualization
         trans, rot = transform_state(np.array([[new_state]]))
         camera.update(trans[0,0,:], rot[0,0,:,:])
         im = renderer.render().unsqueeze(0) # (1, C, H, W) 在维度 0 位置增加一个新的维度，因此 im 的形状从 (C, H, W) 变为 (1, C, H, W)。这种形状是典型的 batch 处理格式，方便在深度学习中处理多张图片的情形。
         render_view = im.clone().cpu().squeeze(0).permute(1, 2, 0).detach().numpy() # 将通道顺序从 (C, H, W) 变为 (H, W, C)，使其符合 NumPy 和大部分图像库（如 PIL 和 Matplotlib）对图像的通道顺序要求，即高度、宽度、通道顺序
         render_view = (render_view * 255).astype(np.uint8)
         render_view = PIL.Image.fromarray(render_view) # Matplotlib 处理的图像格式为 (H, W, C)
+        render_view.save(f'temp/{task_name}/render_view_output_{self.count}.png')
         plt.figure("Render View")
         plt.imshow(render_view)
         plt.show(block=False)
@@ -589,7 +708,11 @@ class MPPI_controller_cpu():
 
 def main():
     # initial state
-    state = [0, 0, 0, 0]
+    if RUN_SIM or OFFLINE_MODE:
+        state = [-1.4, -0.7, 0.0, 1.5776]
+        # state = [-1.4, 0.0, 0.0, 0.0]
+    else:
+        state = ros_interface.acquire_optical_track_pose()
     states =[state]
     controller = MPPI_controller_cpu(N=100, K=5, mu=(0,0,0), sigma=(0.3,0.3,0.1),state=state,log=True)
     # while not Found:
