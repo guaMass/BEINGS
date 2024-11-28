@@ -34,6 +34,8 @@ from cv_bridge import CvBridge
 from tf.transformations import euler_from_quaternion
 import time
 
+from utils import ProbMap
+
 RUN_SIM = True
 OFFLINE_MODE = False
 # model_path = "scence/03/larger.ply" # Path to the ply file model
@@ -41,6 +43,7 @@ model_path = "scence/05/splat_k.ply" # Path to the ply file model
 task_name = "image1"
 target = PIL.Image.open(f"target/scence05/{task_name}.png")
 control_duration = 2.0
+
 
 class ROS_Interface():
     def __init__(self):
@@ -265,43 +268,43 @@ def transform_state(state):
 #                     w_grid[j][i] = state[3]
 #     return q_grid, w_grid
 
-def get_id(x,y,shape=(6,6)):
-    j = np.floor(3 + x).astype(int)
-    i = np.floor(3 - y).astype(int)
-    # convert i,j to int or int array
-    return i,j
+# def get_id(x,y,shape=(6,6)):
+#     j = np.floor(3 + x).astype(int)
+#     i = np.floor(3 - y).astype(int)
+#     # convert i,j to int or int array
+#     return i,j
 
-def get_probability_at_coordinates(x, y, probability_grid):
-    # 计算栅格索引
-    # j = math.floor(2 + x)
-    # i = math.floor(3 - y)
-    i,j = get_id(x,y,probability_grid.shape)
-    # 检查索引是否超出范围
-    if 0 <= i < probability_grid.shape[1] and 0 <= j < probability_grid.shape[0]:
-        return probability_grid[i,j] # 注意行列顺序
-    else:
-        return 0  # 超出范围返回0
+# def get_probability_at_coordinates(x, y, probability_grid):
+#     # 计算栅格索引
+#     # j = math.floor(2 + x)
+#     # i = math.floor(3 - y)
+#     i,j = get_id(x,y,probability_grid.shape)
+#     # 检查索引是否超出范围
+#     if 0 <= i < probability_grid.shape[1] and 0 <= j < probability_grid.shape[0]:
+#         return probability_grid[i,j] # 注意行列顺序
+#     else:
+#         return 0  # 超出范围返回0
     
-def add_confidence_to_grid(x, y, confidence, probability_grid):
-    i,j = get_id(x,y,probability_grid.shape)
-    new_grid = probability_grid.copy()
-    new_grid[i,j] += confidence
-    new_grid = new_grid/np.sum(new_grid)
-    return new_grid
+# def add_confidence_to_grid(x, y, confidence, probability_grid):
+#     i,j = get_id(x,y,probability_grid.shape)
+#     new_grid = probability_grid.copy()
+#     new_grid[i,j] += confidence
+#     new_grid = new_grid/np.sum(new_grid)
+#     return new_grid
 
-def update_probability_grid(x,y,q,probability_grid):
-    i,j = get_id(x,y,probability_grid.shape)
-    # 检查索引是否超出范围
-    # if 0 <= i < probability_grid.shape[1] and 0 <= j < probability_grid.shape[0]:
-    #     return probability_grid # 注意行列顺序
-    new_prob = probability_grid[i,j]
-    new_grid = probability_grid.copy()
-    new_grid[i,j] = new_prob*((1-q)/(1-new_prob*q))
-    # update the rest of new_grid  by *=(q/1-new_prob*q)
-    mask = np.ones(new_grid.shape).astype(bool)
-    mask[i,j] = 0
-    new_grid[mask] *= (1/(1-new_prob*q))
-    return new_grid
+# def update_probability_grid(x,y,q,probability_grid):
+#     i,j = get_id(x,y,probability_grid.shape)
+#     # 检查索引是否超出范围
+#     # if 0 <= i < probability_grid.shape[1] and 0 <= j < probability_grid.shape[0]:
+#     #     return probability_grid # 注意行列顺序
+#     new_prob = probability_grid[i,j]
+#     new_grid = probability_grid.copy()
+#     new_grid[i,j] = new_prob*((1-q)/(1-new_prob*q))
+#     # update the rest of new_grid  by *=(q/1-new_prob*q)
+#     mask = np.ones(new_grid.shape).astype(bool)
+#     mask[i,j] = 0
+#     new_grid[mask] *= (1/(1-new_prob*q))
+#     return new_grid
 
 def dynamics(state, control):
     """
@@ -332,7 +335,7 @@ def dynamics(state, control):
 def cost2go(controls,state,obstacles=None,width=None,height=None):
     gocosts = 10 * np.ones(controls.shape[0])
     # gocosts += 10*np.sum(np.abs(angle_mod(controls[:,:,3])),axis=1)
-    current_i,current_j = get_id(state[0],state[1])
+    # current_i,current_j = get_id(state[0],state[1])
     # calculate all trajectory: N*K*dim which has same shape with controls
     trajs = np.zeros((controls.shape[0],controls.shape[1],4))
     # initial state
@@ -443,7 +446,8 @@ class MPPI_controller_cpu():
         self.log = log
         self.count = 0
         # self.probability_grid = np.full((5, 5), 1/25)
-        self.probability_grid = np.full((6, 6), 1/36)
+        self.raster_map = ProbMap(6,6,2.8,2.8)
+        # self.probability_grid = np.full((6, 6), 1/36)
         self.current_similarity = 0
         # self.best_similarity = 0.1 # task1
         self.best_similarity = 0.035 # task2
@@ -576,7 +580,8 @@ class MPPI_controller_cpu():
                     image_similarity[i] += vlad_s.get_vlad_loss(im, tf_target)
                 else:
                     image_similarity[i] += 100 if vlad_p.get_vlad_loss(im, tf_target) > self.current_similarity else 0
-                bayesian_prob[i] += 50*get_probability_at_coordinates(rollout_traj[i,j+1,0],rollout_traj[i,j+1,1],self.probability_grid)
+                bayesian_prob[i] += 50*self.raster_map.get_probability_at_coordinates(rollout_traj[i,j+1,0],rollout_traj[i,j+1,1])
+                # bayesian_prob[i] += 50*get_probability_at_coordinates(rollout_traj[i,j+1,0],rollout_traj[i,j+1,1],self.probability_grid)
         # calculate the cost
         print("costs:",traj_cost[-8:])
         print("image_similarity:",image_similarity[-8:])
@@ -695,9 +700,11 @@ class MPPI_controller_cpu():
             if current_similarity > self.best_similarity:
                 self.best_similarity = current_similarity
                 print("Find the target!")
-                self.probability_grid = add_confidence_to_grid(new_state[0],new_state[1],current_similarity,self.probability_grid)
+                self.raster_map.add_confidence_to(new_state[0],new_state[1],current_similarity)
+                # self.probability_grid = add_confidence_to_grid(new_state[0],new_state[1],current_similarity,self.probability_grid)
         else:
-            self.probability_grid = update_probability_grid(new_state[0],new_state[1],current_similarity,self.probability_grid)
+            self.raster_map.update_prob_at(new_state[0],new_state[1],current_similarity)
+            # self.probability_grid = update_probability_grid(new_state[0],new_state[1],current_similarity,self.probability_grid)
         if self.log:
             np.save(f'temp/{task_name}/prob_grid_{self.count:04d}.npy', self.probability_grid)
         self.state = new_state
