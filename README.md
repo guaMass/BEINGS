@@ -3,7 +3,7 @@ This repository includes the code that can be used to reproduce the results of o
 
 ## Clone the repo
 ```
-git clone https://github.com/guaMass/BEINGS.git --recursive
+git clone -b ros https://github.com/guaMass/BEINGS.git --recursive
 ```
 
 ## Download scences
