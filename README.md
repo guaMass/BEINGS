@@ -1,6 +1,12 @@
 # BEINGS: Bayesian Embodied Image-goal Navigation with Gaussian Splatting
 This repository includes the code that can be used to reproduce the results of our paper [BEINGS: Bayesian Embodied Image-goal Navigation with Gaussian Splatting](https://arxiv.org/abs/2409.10216)
 
+## TODO
+- [x] Fix bugs in original codes. 
+- [x] Integrate with ROS.
+- [ ] Release the Docker image with integrated ROS.
+- [ ] GPU acceration. 
+
 ## Clone the repo
 ```
 git clone -b ros https://github.com/guaMass/BEINGS.git --recursive
