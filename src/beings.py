@@ -69,7 +69,7 @@ class ROS_Interface():
 
         return [x, y, 0 ,yaw]
     
-    def acquire_哦菩提擦亮_pose(self):  
+    def acquire_optical_track_pose(self):  
         pose_msg = rospy.wait_for_message("/vrpn_client_node/car/pose", PoseStamped)
 
         x = pose_msg.pose.position.x
@@ -706,7 +706,8 @@ class MPPI_controller_cpu():
             self.raster_map.update_prob_at(new_state[0],new_state[1],current_similarity)
             # self.probability_grid = update_probability_grid(new_state[0],new_state[1],current_similarity,self.probability_grid)
         if self.log:
-            np.save(f'temp/{task_name}/prob_grid_{self.count:04d}.npy', self.probability_grid)
+            np.save(f'temp/{task_name}/prob_grid_{self.count:04d}.npy', self.raster_map.raster)
+            # np.save(f'temp/{task_name}/prob_grid_{self.count:04d}.npy', self.probability_grid)
         self.state = new_state
         self.mu = (control[0],control[1])
         self.sigma = (1,0.3)
